@@ -8,9 +8,9 @@ export const config = {
   mlServiceUrl: process.env.ML_SERVICE_URL || 'http://localhost:8000',
   subgraphUrl: process.env.SUBGRAPH_URL || '',
   
-  // Thresholds
+  // Thresholds — amounts in USDC (6 decimals). 10 USDC = 10_000_000
   botScoreThreshold: parseFloat(process.env.BOT_SCORE_THRESHOLD || '0.7'),
   anomalyThreshold: parseFloat(process.env.ANOMALY_THRESHOLD || '0.8'),
-  defaultMaxBetSize: BigInt(process.env.DEFAULT_MAX_BET_SIZE || '10000000000000000000'),
-  defaultDailyLimit: BigInt(process.env.DEFAULT_DAILY_LIMIT || '100000000000000000000'),
+  defaultMaxBetSize: BigInt(process.env.DEFAULT_MAX_BET_SIZE || '10000000'),   // 10 USDC
+  defaultDailyLimit: BigInt(process.env.DEFAULT_DAILY_LIMIT || '100000000'),  // 100 USDC
 };
