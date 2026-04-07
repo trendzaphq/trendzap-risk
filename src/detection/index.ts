@@ -1,6 +1,6 @@
-import { checkPositionLimits } from '../limits/position-limits';
-import { checkBotActivity } from './bot-detector';
-import { checkVelocity } from './velocity-monitor';
+import { checkPositionLimits, recordDailyVolume } from '../limits/position-limits';
+import { checkBotActivity, recordAction } from './bot-detector';
+import { checkVelocity, recordVelocityEvent } from './velocity-monitor';
 import { logger } from '../utils/logger';
 
 export interface AssessmentRequest {
@@ -54,6 +54,23 @@ export async function assessRisk(request: AssessmentRequest): Promise<Assessment
   }
 
   const allowed = riskScore < 0.7;
+
+  // Record this action so future checks have real data to work with.
+  // Only record for allowed bets (don't feed bot signals from blocked requests).
+  if (allowed && request.type === 'bet') {
+    const marketId = request.marketId ?? 'unknown';
+    const amount = request.amount ?? '0';
+    await Promise.all([
+      recordAction(request.userId, marketId, amount),
+      recordVelocityEvent(request.userId),
+      recordDailyVolume(request.userId, BigInt(amount)),
+    ]);
+  } else if (allowed) {
+    // claim / market_create still count towards velocity
+    await Promise.all([
+      recordVelocityEvent(request.userId),
+    ]);
+  }
 
   logger.info({ request, allowed, riskScore }, 'Risk assessment complete');
 

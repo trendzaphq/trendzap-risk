@@ -1,5 +1,8 @@
+import IORedis from 'ioredis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+
+const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: 3 });
 
 /**
  * Position limits — prevent concentration risk.
@@ -43,12 +46,38 @@ export async function checkPositionLimits(
     };
   }
 
-  // Daily limit check would integrate with subgraph/Redis here
-  // For now, pass through — real implementation queries subgraph for user's 24h volume
+  // Daily volume limit — check accumulated 24h spend from Redis
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const dailyKey = `risk:daily:vol:${userId}:${today}`;
+  const currentDailyRaw = await redis.get(dailyKey);
+  const currentDaily = BigInt(currentDailyRaw ?? '0');
+
+  if (currentDaily + amount > dailyLimit) {
+    logger.warn({ userId, currentDaily: currentDaily.toString(), amount: amount.toString(), dailyLimit: dailyLimit.toString() }, 'Daily limit exceeded');
+    return {
+      passed: false,
+      current: currentDaily,
+      max: dailyLimit,
+      reason: `Daily volume ${currentDaily + amount} would exceed limit ${dailyLimit}`,
+    };
+  }
 
   return {
     passed: true,
-    current: amount,
-    max: maxPosition,
+    current: currentDaily,
+    max: dailyLimit,
   };
+}
+
+/**
+ * Increment the user's daily USDC volume after a bet is confirmed.
+ * Key expires at midnight + 1h buffer.
+ */
+export async function recordDailyVolume(userId: string, amount: bigint): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const dailyKey = `risk:daily:vol:${userId}:${today}`;
+  await redis.pipeline()
+    .incrby(dailyKey, Number(amount))
+    .expire(dailyKey, 90_000) // 25h expiry
+    .exec();
 }
