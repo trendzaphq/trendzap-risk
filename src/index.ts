@@ -5,10 +5,20 @@ import { assessRoutes } from './api/routes/assess';
 import { marketRoutes } from './api/routes/market';
 import { userRoutes } from './api/routes/user';
 import { logger } from './utils/logger';
+import { rateLimit } from './api/rate-limit';
 
-const app = Fastify({ logger });
+// `as any`: the installed pino Logger type is missing `msgPrefix`, which Fastify's
+// FastifyBaseLogger requires. Same workaround the oracle service uses.
+const app = Fastify({ logger: logger as any });
 
-await app.register(cors, { origin: true });
+// `origin: true` reflected any Origin, which is effectively open. Restrict to the
+// configured app origins; empty disables cross-origin browser access entirely.
+await app.register(cors, {
+  origin: config.allowedOrigins.length > 0 ? config.allowedOrigins : false,
+});
+
+// Rate limiting — the service previously had none.
+app.addHook('onRequest', rateLimit({ bucket: 'global', max: 120, windowSeconds: 60 }));
 
 // Register routes
 await app.register(assessRoutes, { prefix: '/api/v1' });

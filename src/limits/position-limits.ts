@@ -1,16 +1,21 @@
 import IORedis from 'ioredis';
 import { config } from '../config';
 import { logger } from '../utils/logger';
+import { getLimitsForUser } from '../scoring/reputation-score';
 
 const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: 3 });
 
 /**
- * Position limits — prevent concentration risk.
+ * Position limits — prevent concentration risk. Amounts are USDC at 6 decimals.
  *
  * Rules:
- * 1. Single bet cannot exceed defaultMaxBetSize (10 USDC)
- * 2. User's total daily volume cannot exceed defaultDailyLimit (100 USDC)
- * 3. Single market concentration: no user may hold >40% of total market volume
+ * 1. Single bet cannot exceed the user's tier maxBet
+ * 2. User's total daily volume cannot exceed the user's tier dailyLimit
+ * 3. Bets below the dust minimum are rejected
+ *
+ * The per-tier limits from reputation-score.ts are now actually applied. They used to
+ * be computed, cached, returned over the API, and then ignored here in favour of the
+ * global config defaults — so a WHALE and a brand-new account were treated identically.
  */
 export async function checkPositionLimits(
   userId: string,
@@ -20,10 +25,24 @@ export async function checkPositionLimits(
   passed: boolean;
   current: bigint;
   max: bigint;
+  tier?: string;
   reason?: string;
 }> {
-  const maxPosition = config.defaultMaxBetSize;
-  const dailyLimit = config.defaultDailyLimit;
+  // Tier limits, falling back to the global defaults if reputation is unavailable.
+  let maxPosition = config.defaultMaxBetSize;
+  let dailyLimit = config.defaultDailyLimit;
+  let tier: string | undefined;
+  try {
+    const limits = await getLimitsForUser(userId);
+    maxPosition = limits.maxBet;
+    dailyLimit = limits.daily;
+    tier = limits.tier;
+  } catch (err) {
+    logger.warn(
+      { userId, err: (err as Error).message },
+      'Reputation lookup failed — falling back to default limits',
+    );
+  }
 
   // Check single bet size
   if (amount > maxPosition) {
@@ -31,7 +50,8 @@ export async function checkPositionLimits(
       passed: false,
       current: amount,
       max: maxPosition,
-      reason: `Bet size ${amount} exceeds max ${maxPosition}`,
+      tier,
+      reason: `Bet size ${amount} exceeds the ${tier ?? 'default'} tier maximum of ${maxPosition}`,
     };
   }
 
@@ -42,6 +62,7 @@ export async function checkPositionLimits(
       passed: false,
       current: amount,
       max: maxPosition,
+      tier,
       reason: 'Bet below minimum (dust prevention)',
     };
   }
@@ -58,7 +79,8 @@ export async function checkPositionLimits(
       passed: false,
       current: currentDaily,
       max: dailyLimit,
-      reason: `Daily volume ${currentDaily + amount} would exceed limit ${dailyLimit}`,
+      tier,
+      reason: `Daily volume ${currentDaily + amount} would exceed the ${tier ?? 'default'} tier limit of ${dailyLimit}`,
     };
   }
 
@@ -66,6 +88,7 @@ export async function checkPositionLimits(
     passed: true,
     current: currentDaily,
     max: dailyLimit,
+    tier,
   };
 }
 
@@ -76,8 +99,11 @@ export async function checkPositionLimits(
 export async function recordDailyVolume(userId: string, amount: bigint): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const dailyKey = `risk:daily:vol:${userId}:${today}`;
+  // INCRBY takes the amount as a string so a large bigint is not narrowed through a
+  // double. Safe at 6-decimal USDC magnitudes today, but not if 18-decimal native
+  // AVAX settlement is ever enabled.
   await redis.pipeline()
-    .incrby(dailyKey, Number(amount))
+    .incrby(dailyKey, amount.toString())
     .expire(dailyKey, 90_000) // 25h expiry
     .exec();
 }
